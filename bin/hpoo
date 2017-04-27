@@ -1,0 +1,177 @@
+#!/usr/bin/env python
+import oo_client.hpoo
+import oo_client.hpoo_tester
+import oo_client.hpoo_builder
+import argparse
+import logging
+import sys
+
+
+def get_client(args, parser):
+    if not args.user:
+        parser.error("Must specify username with -u")
+    if not args.password:
+        parser.error("Must specify password with -p")
+    return oo_client.hpoo.OOClient(args.central, args.user, args.password, ssl=args.ssl)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    from requests.packages import urllib3
+    urllib3.disable_warnings()
+    
+    parser = argparse.ArgumentParser(description='Run OO commands')
+    parser.add_argument('-a', 
+                        dest='action',
+                        type=str,
+                        help='Name of action to perform',
+                        choices=['deploy', 'run', 'integration_test', 'build', 'get_config', 'set_config'],
+                        # required=True
+                        )
+    parser.add_argument('-c', 
+                        dest='central',
+                        type=str,
+                        help='URL of central server, default to https://localhost:8443',
+                        default='https://localhost:8443')
+    parser.add_argument('-u', 
+                        dest='user',
+                        type=str,
+                        help='Central username')
+    parser.add_argument('-p', 
+                        dest='password',
+                        type=str,
+                        help='Central password')
+    parser.add_argument('-k', 
+                        dest='ssl',
+                        action='store_false',
+                        help='Disable SSL checking')
+    parser.add_argument('-r', 
+                        dest='release',
+                        action='store_true',
+                        help='Release the content pack')
+    parser.add_argument('-cp', 
+                        dest='content_packs',
+                        type=str,
+                        nargs='+',
+                        help='One or more content packs to deploy')
+    parser.add_argument('-f', 
+                        dest='flows',
+                        type=str,
+                        nargs='+',
+                        help='Path or UUID of one or more flows')
+    parser.add_argument('-bp', 
+                        dest='build_path',
+                        type=str,
+                        help='Path to content pack to build')
+    parser.add_argument('-v', 
+                        dest='version',
+                        type=str,
+                        help='Version to mark build as',
+                        default=None)
+    parser.add_argument('-b', 
+                        dest='branch',
+                        type=str,
+                        help='Name of branch we are building from',
+                        default='trunk')
+    parser.add_argument('--filter', 
+                        dest='test_filter',
+                        type=str,
+                        help='Filter flows to run for test default to'
+                             ' tests/integration_tests/test_',
+                        default='tests/integration_tests/test_')
+    parser.add_argument('-t', 
+                        dest='timeout',
+                        type=int,
+                        help='Timeout in seconds to wait for each flow'
+                             ' to complete or content pack deployment'
+                             ' default to 300',
+                        default=300) 
+    parser.add_argument('--svn-path', 
+                        dest='svn_path',
+                        type=str,
+                        help='Path relative to root containing trunk',
+                        default='')
+    parser.add_argument('-get-config',
+                        dest='get_config',
+                        help='Get all configuration items or get specific item(s) by specifying type (and path)',
+                        default=''
+                        )
+    parser.add_argument('-set-config',
+                        dest='set_config',
+                        help='Set a configuration item by providing type and path',
+                        )
+    parser.add_argument('-type',
+                        dest='config_type',
+                        help='Configuration item type',
+                        choices=['system-accounts', 'system-properties', 'group-aliases', 'domain-terms', 'selection-lists'],
+                        type=str,
+                        default='')
+    parser.add_argument('-path',
+                        dest='config_path',
+                        type=str,
+                        help='Path relative to Configuration/[type]',
+                        default='')
+    parser.add_argument('-value',
+                        dest='config_value',
+                        help='Configuration item value',
+                        type=str
+                        )
+    args = parser.parse_args()
+    
+    if args.action == 'deploy':
+        if not args.content_packs:
+            parser.error('If action is deploy please specify content packs by path with -cp')
+        if get_client(args, parser).deploy_content_packs(args.content_packs,
+                                                         timeout=args.timeout):
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    elif args.action == 'run':
+        if not args.flows:
+            parser.error('If action is run please specify a flow by path or UUID with -f')
+        if get_client(args, parser).run_flows(args.flows, timeout=args.timeout):
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    elif args.action == 'integration_test':
+        if not args.content_packs:
+            parser.error('If action is integration_test please specify a content pack name with -cp')
+        if len(args.content_packs) != 1:
+            parser.error('Can only test one content pack at a time')
+        if oo_client.hpoo_tester.IntegrationTester(get_client(args, parser),
+                                                   args.test_filter).run_tests(args.content_packs[0],
+                                                                               timeout=args.timeout):
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    elif args.action == 'build':
+        if not args.build_path:
+            parser.error("Must specify path to content pack to build with -bp")
+        cb = oo_client.hpoo_builder.ContentBuilder(args.build_path,
+                                                   args.svn_path)
+        cb.run_build(release=args.release, branch=args.branch,
+                     version=args.version)
+
+    if args.action == 'get_config':
+        if not args.config_type:
+            ret = get_client(args, parser).get_all_configuration_items()
+        elif not args.config_path:
+            ret = get_client(args, parser).get_configuration_items_by_type(args.config_type)
+        else:
+            ret = get_client(args, parser).get_a_configuration_item(args.config_type, args.config_path)
+        if ret:
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    if args.action == 'set_config':
+        if not args.config_type or not args.config_path:
+            parser.error('Must specify type and path of the configuration item')
+        if not args.config_value:
+            parser.error('Must specify value to be set to')
+        if get_client(args, parser).set_a_configuration_item(args.config_type, args.config_path, args.config_value):
+            sys.exit(0)
+        else:
+            sys.exit(1)
+if __name__ == '__main__':
+    main()
